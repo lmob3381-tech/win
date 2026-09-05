@@ -6,7 +6,7 @@ on:
       duration_minutes:
         description: "Berapa lama sesi dibuka (menit), max ~350 (limit job 6 jam)"
         required: false
-        default: "180"
+        default: "310"
 
 jobs:
   windows-desktop:
@@ -25,12 +25,17 @@ jobs:
       - name: Install UltraVNC
         shell: powershell
         run: |
-          Write-Host "Downloading UltraVNC..."
-          Invoke-WebRequest -Uri "https://uvnc.eu/download/1822/UltraVNC_1822_X64_Setup.msi" -OutFile "$env:TEMP\ultravnc.msi"
-          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\ultravnc.msi`" /qn SERVERVIEWER=1 SERVICE=1 PASSWORD=$env:VNC_PASSWORD" -Wait
+          Write-Host "Installing UltraVNC via Chocolatey..."
+          choco install ultravnc -y --no-progress --params "/Password:$env:VNC_PASSWORD"
           Start-Sleep -Seconds 5
 
-          Restart-Service uvnc_service -ErrorAction SilentlyContinue
+          $vncService = Get-Service | Where-Object { $_.Name -like "*vnc*" } | Select-Object -First 1
+          if ($vncService) {
+            Write-Host "Service VNC ditemukan: $($vncService.Name)"
+            Restart-Service $vncService.Name -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "WARNING: Tidak ada service VNC terdeteksi, cek instalasi manual."
+          }
           Start-Sleep -Seconds 3
 
           New-NetFirewallRule -DisplayName "UltraVNC 5900" -Direction Inbound -LocalPort 5900 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
