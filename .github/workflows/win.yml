@@ -1,4 +1,4 @@
-name: Windows noVNC + Antigravity 2.0
+name: Windows noVNC via Cloudflare Tunnel
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       duration_minutes:
         description: "Berapa lama sesi dibuka (menit), max ~350 (limit job 6 jam)"
         required: false
-        default: "180"
+        default: "280"
 
 jobs:
   windows-desktop:
@@ -52,30 +52,7 @@ jobs:
           Write-Host "noVNC bridge running on port 6080"
 
       # ---------------------------------------------------------
-      # 3. Install Antigravity 2.0 (Windows installer resmi)
-      # ---------------------------------------------------------
-      - name: Install Antigravity 2.0
-        shell: powershell
-        run: |
-          Write-Host "Downloading Antigravity 2.0 installer..."
-          Invoke-WebRequest -Uri "https://antigravity.google/download/windows" -OutFile "$env:TEMP\antigravity-setup.exe" -UseBasicParsing
-          Start-Process -FilePath "$env:TEMP\antigravity-setup.exe" -ArgumentList "/S" -Wait -ErrorAction SilentlyContinue
-          Write-Host "Antigravity install step selesai (cek log jika installer punya UI wizard, mungkin perlu flag silent yang beda)."
-
-      - name: Launch Antigravity on desktop
-        shell: powershell
-        run: |
-          $exePath = "$env:LOCALAPPDATA\Programs\Antigravity\Antigravity.exe"
-          if (Test-Path $exePath) {
-            Start-Process -FilePath $exePath
-            Write-Host "Antigravity dijalankan."
-          } else {
-            Write-Host "WARNING: Antigravity.exe tidak ditemukan di path default, cek hasil instalasi."
-          }
-        continue-on-error: true
-
-      # ---------------------------------------------------------
-      # 4. Cloudflared quick tunnel (TANPA akun/login) ke noVNC
+      # 3. Cloudflared quick tunnel (TANPA akun/login) ke noVNC
       # ---------------------------------------------------------
       - name: Install cloudflared
         shell: powershell
@@ -116,7 +93,7 @@ jobs:
         continue-on-error: true
 
       # ---------------------------------------------------------
-      # 5. Tahan sesi tetap hidup selama durasi yang diminta
+      # 4. Tahan sesi tetap hidup selama durasi yang diminta
       # ---------------------------------------------------------
       - name: Keep session alive
         shell: powershell
