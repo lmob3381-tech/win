@@ -6,7 +6,7 @@ on:
       duration_minutes:
         description: "Berapa lama sesi dibuka (menit), max ~350 (limit job 6 jam)"
         required: false
-        default: "280"
+        default: "180"
 
 jobs:
   windows-desktop:
@@ -20,17 +20,21 @@ jobs:
           echo "VNC_PASSWORD=antigravity123" >> $env:GITHUB_ENV
 
       # ---------------------------------------------------------
-      # 1. Install TightVNC server (ringan, cocok utk Windows Server core)
+      # 1. Install UltraVNC server (tidak ada blokir loopback seperti TightVNC)
       # ---------------------------------------------------------
-      - name: Install TightVNC
+      - name: Install UltraVNC
         shell: powershell
         run: |
-          Write-Host "Downloading TightVNC..."
-          Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi" -OutFile "$env:TEMP\tightvnc.msi"
-          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\tightvnc.msi`" /quiet /norestart ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=$env:VNC_PASSWORD SET_USECONTROLAUTHENTICATION=1 VALUE_OF_USECONTROLAUTHENTICATION=1" -Wait
+          Write-Host "Downloading UltraVNC..."
+          Invoke-WebRequest -Uri "https://uvnc.eu/download/1822/UltraVNC_1822_X64_Setup.msi" -OutFile "$env:TEMP\ultravnc.msi"
+          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\ultravnc.msi`" /qn SERVERVIEWER=1 SERVICE=1 PASSWORD=$env:VNC_PASSWORD" -Wait
           Start-Sleep -Seconds 5
-          Restart-Service tvnserver -ErrorAction SilentlyContinue
-          Write-Host "TightVNC installed."
+
+          Restart-Service uvnc_service -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          New-NetFirewallRule -DisplayName "UltraVNC 5900" -Direction Inbound -LocalPort 5900 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
+          Write-Host "UltraVNC installed dan service jalan di port 5900."
 
       # ---------------------------------------------------------
       # 2. Install noVNC + websockify (jembatan VNC -> browser via WebSocket)
@@ -102,4 +106,3 @@ jobs:
           if ($minutes -le 0) { $minutes = 180 }
           Write-Host "Sesi akan bertahan $minutes menit. Buka URL noVNC dari log step sebelumnya."
           Start-Sleep -Seconds ($minutes * 60)
-          
