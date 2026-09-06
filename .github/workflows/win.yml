@@ -6,7 +6,7 @@ on:
       rdp_password:
         description: 'Password buat login RDP (min 8 karakter, ada huruf besar/kecil/angka)'
         required: true
-        default: 'asukabehko'
+        default: 'Asukabehko123@'
 
 jobs:
   windows-rdp:
