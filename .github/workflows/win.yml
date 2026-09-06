@@ -74,17 +74,37 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
-          # Set password user runneradmin (user default GitHub-hosted Windows runner)
           $password = ConvertTo-SecureString "${{ github.event.inputs.rdp_password }}" -AsPlainText -Force
-          $user = "runneradmin"
 
-          try {
-            Set-LocalUser -Name $user -Password $password -ErrorAction Stop
-          } catch {
-            Write-Host "User $user tidak ditemukan, coba user 'runner'..."
-            $user = "runner"
-            Set-LocalUser -Name $user -Password $password
+          # Cari user admin lokal secara otomatis (nama beda-beda tergantung image runner)
+          Write-Host "Daftar local user yang ada:"
+          Get-LocalUser | Select-Object Name, Enabled | Format-Table | Out-String | Write-Host
+
+          $candidates = @("runneradmin", "runner", $env:USERNAME)
+          $user = $null
+
+          foreach ($c in $candidates) {
+            if ($c -and (Get-LocalUser -Name $c -ErrorAction SilentlyContinue)) {
+              $user = $c
+              break
+            }
           }
+
+          if (-not $user) {
+            # Fallback: ambil user pertama yang tergabung di grup Administrators
+            $adminGroup = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue
+            if ($adminGroup) {
+              $user = ($adminGroup | Select-Object -First 1).Name -replace '^.*\\', ''
+            }
+          }
+
+          if (-not $user) {
+            Write-Host "GAGAL: Tidak ada user admin lokal yang ditemukan."
+            exit 1
+          }
+
+          Set-LocalUser -Name $user -Password $password
+          Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
 
           # Pastikan NLA tidak menghalangi (opsional, biar auto-connect lebih mulus dari client mana pun)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -ErrorAction SilentlyContinue
