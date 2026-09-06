@@ -1,113 +1,68 @@
-name: Windows noVNC via Cloudflare Tunnel
+name: Windows Remote Desktop (VNC via ngrok)
 
 on:
   workflow_dispatch:
     inputs:
-      duration_minutes:
-        description: "Berapa lama sesi dibuka (menit), max ~350 (limit job 6 jam)"
-        required: false
-        default: "310"
+      vnc_password:
+        description: 'Password VNC (max 8 karakter)'
+        required: true
+        default: 'ganti123'
 
 jobs:
-  windows-desktop:
-    runs-on: windows-latest
-    timeout-minutes: 360
+  windows-vnc:
+    runs-on: windows-2022
+    timeout-minutes: 350   # ~6 jam, batas maksimal GitHub-hosted runner
+
     steps:
-      - name: Set VNC password
+      - name: Install TightVNC Server
         shell: powershell
         run: |
-          $env:VNC_PASSWORD = "antigravity123"
-          echo "VNC_PASSWORD=antigravity123" >> $env:GITHUB_ENV
-
-      # ---------------------------------------------------------
-      # 1. Install UltraVNC server (tidak ada blokir loopback seperti TightVNC)
-      # ---------------------------------------------------------
-      - name: Install UltraVNC
-        shell: powershell
-        run: |
-          Write-Host "Installing UltraVNC via Chocolatey..."
-          choco install ultravnc -y --no-progress --params "/Password:$env:VNC_PASSWORD"
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi" -OutFile "tightvnc.msi"
+          Start-Process msiexec.exe -ArgumentList "/i tightvnc.msi /quiet /norestart ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=${{ github.event.inputs.vnc_password }}" -Wait
           Start-Sleep -Seconds 5
+          Get-Service -Name "tvnserver" | Start-Service
+          Write-Host "TightVNC service jalan di port 5900"
 
-          $vncService = Get-Service | Where-Object { $_.Name -like "*vnc*" } | Select-Object -First 1
-          if ($vncService) {
-            Write-Host "Service VNC ditemukan: $($vncService.Name)"
-            Restart-Service $vncService.Name -ErrorAction SilentlyContinue
-          } else {
-            Write-Host "WARNING: Tidak ada service VNC terdeteksi, cek instalasi manual."
-          }
-          Start-Sleep -Seconds 3
-
-          New-NetFirewallRule -DisplayName "UltraVNC 5900" -Direction Inbound -LocalPort 5900 -Protocol TCP -Action Allow -ErrorAction SilentlyContinue | Out-Null
-          Write-Host "UltraVNC installed dan service jalan di port 5900."
-
-      # ---------------------------------------------------------
-      # 2. Install noVNC + websockify (jembatan VNC -> browser via WebSocket)
-      # ---------------------------------------------------------
-      - name: Setup Python & noVNC
+      - name: Download & setup ngrok
         shell: powershell
         run: |
-          choco install python -y --no-progress
-          refreshenv
-          pip install websockify
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile "ngrok.zip"
+          Expand-Archive -Path "ngrok.zip" -DestinationPath "." -Force
+          .\ngrok.exe config add-authtoken 2mTSjcO07iCjjNJvngly1gjUwGY_4sCqrhPGwjrcY4QM5qTfN
 
-          git clone --depth 1 https://github.com/novnc/noVNC.git "$env:TEMP\noVNC"
-
-      - name: Start websockify (noVNC bridge)
+      - name: Start ngrok TCP tunnel
         shell: powershell
         run: |
-          Start-Process -FilePath "python" -ArgumentList "-m websockify --web `"$env:TEMP\noVNC`" 6080 localhost:5900" -WindowStyle Hidden
-          Start-Sleep -Seconds 5
-          Write-Host "noVNC bridge running on port 6080"
+          Start-Process -FilePath ".\ngrok.exe" -ArgumentList "tcp", "5900", "--log=stdout", "--log-format=json" `
+            -RedirectStandardOutput "ngrok.log" -NoNewWindow
+          Start-Sleep -Seconds 8
 
-      # ---------------------------------------------------------
-      # 3. Cloudflared quick tunnel (TANPA akun/login) ke noVNC
-      # ---------------------------------------------------------
-      - name: Install cloudflared
+      - name: Tampilkan alamat tunnel (host:port buat RealVNC)
         shell: powershell
         run: |
-          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "$env:TEMP\cloudflared.exe"
-
-      - name: Start Cloudflare quick tunnel
-        shell: powershell
-        run: |
-          $log = "$env:TEMP\cloudflared.log"
-          Start-Process -FilePath "$env:TEMP\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080 --logfile `"$log`"" -WindowStyle Hidden
-          Start-Sleep -Seconds 12
-
-          $found = $false
-          for ($i = 0; $i -lt 10; $i++) {
-            if (Test-Path $log) {
-              $content = Get-Content $log -Raw
-              if ($content -match "https://[a-zA-Z0-9\-]+\.trycloudflare\.com") {
-                $url = $Matches[0]
-                Write-Host "=================================================="
-                Write-Host " NOVNC URL: $url/vnc.html?password=$env:VNC_PASSWORD"
-                Write-Host "=================================================="
-                $found = $true
-                break
-              }
+          $maxTries = 10
+          for ($i = 0; $i -lt $maxTries; $i++) {
+            try {
+              $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -ErrorAction Stop
+              $publicUrl = $resp.tunnels[0].public_url
+              Write-Host "=================================================="
+              Write-Host " ALAMAT VNC (masukkan ke RealVNC Viewer Android):"
+              Write-Host " $($publicUrl -replace 'tcp://','')"
+              Write-Host " Password: ${{ github.event.inputs.vnc_password }}"
+              Write-Host "=================================================="
+              break
+            } catch {
+              Start-Sleep -Seconds 3
             }
-            Start-Sleep -Seconds 3
-          }
-          if (-not $found) {
-            Write-Host "Tunnel URL belum ketemu, cek cloudflared.log manual di artifact."
           }
 
-      - name: Upload cloudflared log (buat cari URL kalau ketinggalan)
-        uses: actions/upload-artifact@v4
-        with:
-          name: cloudflared-log
-          path: C:\Users\runneradmin\AppData\Local\Temp\cloudflared.log
-        continue-on-error: true
-
-      # ---------------------------------------------------------
-      # 4. Tahan sesi tetap hidup selama durasi yang diminta
-      # ---------------------------------------------------------
-      - name: Keep session alive
+      - name: Keep alive (jaga koneksi tetap hidup)
         shell: powershell
         run: |
-          $minutes = [int]"${{ github.event.inputs.duration_minutes }}"
-          if ($minutes -le 0) { $minutes = 180 }
-          Write-Host "Sesi akan bertahan $minutes menit. Buka URL noVNC dari log step sebelumnya."
-          Start-Sleep -Seconds ($minutes * 60)
+          $endTime = (Get-Date).AddMinutes(340)
+          while ((Get-Date) -lt $endTime) {
+            Start-Sleep -Seconds 60
+            Write-Host "Masih hidup... $(Get-Date)"
+          }
+          
