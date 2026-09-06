@@ -19,10 +19,22 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi" -OutFile "tightvnc.msi"
-          Start-Process msiexec.exe -ArgumentList "/i tightvnc.msi /quiet /norestart ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=${{ github.event.inputs.vnc_password }}" -Wait
+          Start-Process msiexec.exe -ArgumentList "/i tightvnc.msi /quiet /norestart ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=${{ github.event.inputs.vnc_password }} SET_ALLOWLOOPBACK=1 VALUE_OF_ALLOWLOOPBACK=1" -Wait
           Start-Sleep -Seconds 5
-          Get-Service -Name "tvnserver" | Start-Service
-          Write-Host "TightVNC service jalan di port 5900"
+
+          # Pastikan AllowLoopback benar-benar ke-set di registry (kadang MSI property tidak konsisten diterapkan)
+          $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
+          if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+          Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Type DWord -Force
+
+          Restart-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Get-Service -Name "tvnserver" | Start-Service -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+
+          Write-Host "TightVNC service jalan di port 5900, loopback connections: enabled"
+          Write-Host "Cek nilai registry AllowLoopback:"
+          Get-ItemProperty -Path $regPath -Name "AllowLoopback" -ErrorAction SilentlyContinue
 
       - name: Install Python (buat jalanin noVNC/websockify)
         uses: actions/setup-python@v5
@@ -121,3 +133,4 @@ jobs:
             }
             Write-Host "Masih hidup... $(Get-Date) | websockify=$wsState cloudflared=$cfState"
           }
+          
