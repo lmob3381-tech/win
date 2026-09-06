@@ -1,136 +1,109 @@
-name: Windows Remote Desktop (noVNC via Cloudflare Quick Tunnel)
+name: Windows Remote Desktop (RDP via Tailscale)
 
 on:
   workflow_dispatch:
     inputs:
-      vnc_password:
-        description: 'Password VNC (max 8 karakter)'
-        required: true
-        default: 'ganti123'
+      rdp_password:
+        description: 'Password buat login RDP (min 8 karakter, ada huruf besar/kecil/angka)'
+        required: false
+        default: 'GantiPass123!'
 
 jobs:
-  windows-vnc:
+  windows-rdp:
     runs-on: windows-2022
     timeout-minutes: 350   # ~6 jam, batas maksimal GitHub-hosted runner
 
     steps:
-      - name: Install TightVNC Server
+      - name: Install Tailscale
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest -Uri "https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi" -OutFile "tightvnc.msi"
-          Start-Process msiexec.exe -ArgumentList "/i tightvnc.msi /quiet /norestart ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=1 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=${{ github.event.inputs.vnc_password }} SET_ALLOWLOOPBACK=1 VALUE_OF_ALLOWLOOPBACK=1" -Wait
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi" -OutFile "tailscale.msi"
+          Start-Process msiexec.exe -ArgumentList "/i tailscale.msi /quiet /norestart TS_NOLAUNCH=1 TS_UNATTENDEDMODE=always" -Wait
+          Start-Sleep -Seconds 5
+          Write-Host "Tailscale terinstall."
+
+      - name: Connect ke Tailnet
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+
+          & $tailscaleExe up --authkey="tskey-auth-kZG3kY3t5211CNTRL-LtjttLtxggVnz3K17iWggVd3fPk8ERUG" --accept-dns --hostname="github-runner-$env:GITHUB_RUN_ID" --unattended
+
           Start-Sleep -Seconds 5
 
-          # Pastikan AllowLoopback benar-benar ke-set di registry (kadang MSI property tidak konsisten diterapkan)
-          $regPath = "HKLM:\SOFTWARE\TightVNC\Server"
-          if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-          Set-ItemProperty -Path $regPath -Name "AllowLoopback" -Value 1 -Type DWord -Force
+          $status = & $tailscaleExe status --json | ConvertFrom-Json
+          $tsIP = $status.Self.TailscaleIPs[0]
 
-          Restart-Service -Name "tvnserver" -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
-          Get-Service -Name "tvnserver" | Start-Service -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
-
-          Write-Host "TightVNC service jalan di port 5900, loopback connections: enabled"
-          Write-Host "Cek nilai registry AllowLoopback:"
-          Get-ItemProperty -Path $regPath -Name "AllowLoopback" -ErrorAction SilentlyContinue
-
-      - name: Install Python (buat jalanin noVNC/websockify)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Download noVNC
-        shell: powershell
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/novnc/noVNC/archive/refs/heads/master.zip" -OutFile "novnc.zip"
-          Expand-Archive -Path "novnc.zip" -DestinationPath "." -Force
-          Rename-Item -Path "noVNC-master" -NewName "noVNC"
-
-      - name: Install websockify
-        shell: powershell
-        run: |
-          pip install websockify
-
-      - name: Download cloudflared
-        shell: powershell
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
-
-      - name: Start websockify + cloudflared + tampilkan link + keep alive (satu step menyatu)
-        shell: powershell
-        run: |
-          # PENTING: kedua proses ini dijalankan sebagai Job DI DALAM STEP YANG SAMA,
-          # supaya keduanya tetap hidup selama step ini (dan loop keep-alive di baliknya) berjalan.
-          # Kalau dipisah antar-step, job akan mati saat step-nya selesai.
-
-          $wsJob = Start-Job -ScriptBlock {
-            Set-Location $using:PWD
-            websockify --web noVNC 6080 localhost:5900 2>&1 | Out-File -FilePath "websockify_full.log" -Encoding utf8
-          }
-
-          Write-Host "Menunggu websockify listening di port 6080..."
-          $wsReady = $false
-          for ($i = 0; $i -lt 15; $i++) {
-            Start-Sleep -Seconds 2
-            $test = Test-NetConnection -ComputerName localhost -Port 6080 -WarningAction SilentlyContinue
-            if ($test.TcpTestSucceeded) { $wsReady = $true; break }
-          }
-
-          if (-not $wsReady) {
-            Write-Host "GAGAL: websockify tidak listening di port 6080. Log:"
-            Get-Content "websockify_full.log" -ErrorAction SilentlyContinue
+          if (-not $tsIP) {
+            Write-Host "GAGAL: Tailscale belum dapat IP. Cek status:"
+            & $tailscaleExe status
             exit 1
           }
-          Write-Host "websockify siap di port 6080."
 
-          $cfJob = Start-Job -ScriptBlock {
-            Set-Location $using:PWD
-            & ".\cloudflared.exe" tunnel --url http://localhost:6080 2>&1 | Out-File -FilePath "cf_full.log" -Encoding utf8
+          Write-Host "Tailscale IP: $tsIP"
+          echo "TS_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Enable RDP + set password
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # Set password user runneradmin (user default GitHub-hosted Windows runner)
+          $password = ConvertTo-SecureString "${{ github.event.inputs.rdp_password }}" -AsPlainText -Force
+          $user = "runneradmin"
+
+          try {
+            Set-LocalUser -Name $user -Password $password -ErrorAction Stop
+          } catch {
+            Write-Host "User $user tidak ditemukan, coba user 'runner'..."
+            $user = "runner"
+            Set-LocalUser -Name $user -Password $password
           }
 
-          Write-Host "Menunggu cloudflared connect..."
-          $foundUrl = $null
-          for ($i = 0; $i -lt 30; $i++) {
-            Start-Sleep -Seconds 2
-            if (Test-Path "cf_full.log") {
-              $content = Get-Content "cf_full.log" -Raw -ErrorAction SilentlyContinue
-              if ($content -match "https://[a-zA-Z0-9\-]+\.trycloudflare\.com") {
-                $foundUrl = $matches[0]
-                break
-              }
-            }
-          }
+          # Pastikan NLA tidak menghalangi (opsional, biar auto-connect lebih mulus dari client mana pun)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -ErrorAction SilentlyContinue
 
+          Write-Host "RDP enabled. User: $user"
+          echo "RDP_USER=$user" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Tampilkan info koneksi + keep alive
+        shell: powershell
+        run: |
           Write-Host "=================================================="
-          if ($foundUrl) {
-            Write-Host " BUKA LINK INI DI CHROME ANDROID:"
-            Write-Host " $foundUrl/vnc.html?autoconnect=true&password=${{ github.event.inputs.vnc_password }}"
-          } else {
-            Write-Host " URL belum ketemu setelah 60 detik. Cek full log di bawah:"
-            Get-Content "cf_full.log" -ErrorAction SilentlyContinue
-          }
-          Write-Host " Password VNC: ${{ github.event.inputs.vnc_password }}"
+          Write-Host " KONEKSI RDP SIAP"
+          Write-Host "=================================================="
+          Write-Host " Buka Microsoft Remote Desktop app di HP (Android/iOS)"
+          Write-Host " atau Remote Desktop Connection di PC/Mac lain yang"
+          Write-Host " SUDAH LOGIN Tailscale dengan akun yang sama."
+          Write-Host ""
+          Write-Host " Host/IP   : $env:TS_IP"
+          Write-Host " Port      : 3389"
+          Write-Host " Username  : $env:RDP_USER"
+          Write-Host " Password  : ${{ github.event.inputs.rdp_password }}"
           Write-Host "=================================================="
           Write-Host ""
-          Write-Host "Kedua proses tetap hidup selama step ini berjalan (loop keep-alive di bawah)."
-          Write-Host "Jangan cancel workflow selama masih mau dipakai."
+          Write-Host "Jangan cancel workflow ini selama masih dipakai."
           Write-Host ""
 
           $endTime = (Get-Date).AddMinutes(335)
           while ((Get-Date) -lt $endTime) {
             Start-Sleep -Seconds 30
-            $wsState = (Get-Job -Id $wsJob.Id).State
-            $cfState = (Get-Job -Id $cfJob.Id).State
-            if ($wsState -ne "Running" -or $cfState -ne "Running") {
-              Write-Host "PERINGATAN: salah satu proses berhenti. websockify=$wsState, cloudflared=$cfState"
-              Write-Host "--- log websockify ---"
-              Get-Content "websockify_full.log" -Tail 20 -ErrorAction SilentlyContinue
-              Write-Host "--- log cloudflared ---"
-              Get-Content "cf_full.log" -Tail 20 -ErrorAction SilentlyContinue
+            $tsState = & "C:\Program Files\Tailscale\tailscale.exe" status --json | ConvertFrom-Json
+            if (-not $tsState.Self.Online) {
+              Write-Host "PERINGATAN: Tailscale terputus."
               break
             }
-            Write-Host "Masih hidup... $(Get-Date) | websockify=$wsState cloudflared=$cfState"
+            Write-Host "Masih hidup... $(Get-Date) | Tailscale IP: $env:TS_IP"
           }
-          
+
+      - name: Logout Tailscale (cleanup)
+        if: always()
+        shell: powershell
+        run: |
+          & "C:\Program Files\Tailscale\tailscale.exe" logout
