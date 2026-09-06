@@ -5,8 +5,8 @@ on:
     inputs:
       rdp_password:
         description: 'Password buat login RDP (min 8 karakter, ada huruf besar/kecil/angka)'
-        required: false
-        default: 'GantiPass123!'
+        required: true
+        default: 'asu'
 
 jobs:
   windows-rdp:
@@ -18,7 +18,27 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi" -OutFile "tailscale.msi"
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+          $maxRetries = 5
+          $success = $false
+          for ($i = 1; $i -le $maxRetries; $i++) {
+            try {
+              Write-Host "Percobaan download ke-$i..."
+              Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.msi" -OutFile "tailscale.msi" -UseBasicParsing -TimeoutSec 60
+              $success = $true
+              break
+            } catch {
+              Write-Host "Gagal: $($_.Exception.Message)"
+              Start-Sleep -Seconds 10
+            }
+          }
+
+          if (-not $success) {
+            Write-Host "GAGAL total download Tailscale setelah $maxRetries percobaan."
+            exit 1
+          }
+
           Start-Process msiexec.exe -ArgumentList "/i tailscale.msi /quiet /norestart TS_NOLAUNCH=1 TS_UNATTENDEDMODE=always" -Wait
           Start-Sleep -Seconds 5
           Write-Host "Tailscale terinstall."
@@ -106,4 +126,10 @@ jobs:
         if: always()
         shell: powershell
         run: |
-          & "C:\Program Files\Tailscale\tailscale.exe" logout
+          $tsPath = "C:\Program Files\Tailscale\tailscale.exe"
+          if (Test-Path $tsPath) {
+            & $tsPath logout
+          } else {
+            Write-Host "Tailscale tidak terinstall, skip logout."
+          }
+          
