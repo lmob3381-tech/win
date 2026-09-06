@@ -41,53 +41,83 @@ jobs:
         run: |
           pip install websockify
 
-      - name: Start websockify (jembatan VNC ke WebSocket/HTTP di port 6080)
-        shell: powershell
-        run: |
-          Start-Process -FilePath "websockify" `
-            -ArgumentList "--web", "noVNC", "6080", "localhost:5900" `
-            -RedirectStandardOutput "websockify_out.log" -RedirectStandardError "websockify_err.log" -NoNewWindow
-          Start-Sleep -Seconds 5
-          Write-Host "websockify + noVNC jalan di port 6080"
-
       - name: Download cloudflared
         shell: powershell
         run: |
           Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
 
-      - name: Start Cloudflare Quick Tunnel (tanpa akun)
+      - name: Start websockify + cloudflared + tampilkan link + keep alive (satu step menyatu)
         shell: powershell
         run: |
-          Start-Process -FilePath ".\cloudflared.exe" `
-            -ArgumentList "tunnel", "--url", "http://localhost:6080" `
-            -RedirectStandardOutput "cf_out.log" -RedirectStandardError "cf_err.log" -NoNewWindow
-          Start-Sleep -Seconds 15
+          # PENTING: kedua proses ini dijalankan sebagai Job DI DALAM STEP YANG SAMA,
+          # supaya keduanya tetap hidup selama step ini (dan loop keep-alive di baliknya) berjalan.
+          # Kalau dipisah antar-step, job akan mati saat step-nya selesai.
 
-      - name: Tampilkan link akses
-        shell: powershell
-        run: |
-          $logContent = Get-Content "cf_err.log" -ErrorAction SilentlyContinue
-          $urlLine = $logContent | Select-String -Pattern "https://.*\.trycloudflare\.com"
+          $wsJob = Start-Job -ScriptBlock {
+            Set-Location $using:PWD
+            websockify --web noVNC 6080 localhost:5900 2>&1 | Out-File -FilePath "websockify_full.log" -Encoding utf8
+          }
+
+          Write-Host "Menunggu websockify listening di port 6080..."
+          $wsReady = $false
+          for ($i = 0; $i -lt 15; $i++) {
+            Start-Sleep -Seconds 2
+            $test = Test-NetConnection -ComputerName localhost -Port 6080 -WarningAction SilentlyContinue
+            if ($test.TcpTestSucceeded) { $wsReady = $true; break }
+          }
+
+          if (-not $wsReady) {
+            Write-Host "GAGAL: websockify tidak listening di port 6080. Log:"
+            Get-Content "websockify_full.log" -ErrorAction SilentlyContinue
+            exit 1
+          }
+          Write-Host "websockify siap di port 6080."
+
+          $cfJob = Start-Job -ScriptBlock {
+            Set-Location $using:PWD
+            & ".\cloudflared.exe" tunnel --url http://localhost:6080 2>&1 | Out-File -FilePath "cf_full.log" -Encoding utf8
+          }
+
+          Write-Host "Menunggu cloudflared connect..."
+          $foundUrl = $null
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 2
+            if (Test-Path "cf_full.log") {
+              $content = Get-Content "cf_full.log" -Raw -ErrorAction SilentlyContinue
+              if ($content -match "https://[a-zA-Z0-9\-]+\.trycloudflare\.com") {
+                $foundUrl = $matches[0]
+                break
+              }
+            }
+          }
+
           Write-Host "=================================================="
-          Write-Host " BUKA LINK INI DI CHROME ANDROID:"
-          if ($urlLine) {
-            $url = ($urlLine -split '\s+') | Where-Object { $_ -match "https://.*trycloudflare\.com" } | Select-Object -First 1
-            Write-Host " $url/vnc.html?autoconnect=true&password=${{ github.event.inputs.vnc_password }}"
+          if ($foundUrl) {
+            Write-Host " BUKA LINK INI DI CHROME ANDROID:"
+            Write-Host " $foundUrl/vnc.html?autoconnect=true&password=${{ github.event.inputs.vnc_password }}"
           } else {
-            Write-Host " (URL belum ketemu, lihat full log di bawah)"
+            Write-Host " URL belum ketemu setelah 60 detik. Cek full log di bawah:"
+            Get-Content "cf_full.log" -ErrorAction SilentlyContinue
           }
           Write-Host " Password VNC: ${{ github.event.inputs.vnc_password }}"
           Write-Host "=================================================="
           Write-Host ""
-          Write-Host "=== FULL LOG CLOUDFLARED (kalau URL di atas kosong, cari manual di sini) ==="
-          Get-Content "cf_err.log" -ErrorAction SilentlyContinue
+          Write-Host "Kedua proses tetap hidup selama step ini berjalan (loop keep-alive di bawah)."
+          Write-Host "Jangan cancel workflow selama masih mau dipakai."
+          Write-Host ""
 
-      - name: Keep alive (jaga koneksi tetap hidup)
-        shell: powershell
-        run: |
-          $endTime = (Get-Date).AddMinutes(340)
+          $endTime = (Get-Date).AddMinutes(335)
           while ((Get-Date) -lt $endTime) {
-            Start-Sleep -Seconds 60
-            Write-Host "Masih hidup... $(Get-Date)"
+            Start-Sleep -Seconds 30
+            $wsState = (Get-Job -Id $wsJob.Id).State
+            $cfState = (Get-Job -Id $cfJob.Id).State
+            if ($wsState -ne "Running" -or $cfState -ne "Running") {
+              Write-Host "PERINGATAN: salah satu proses berhenti. websockify=$wsState, cloudflared=$cfState"
+              Write-Host "--- log websockify ---"
+              Get-Content "websockify_full.log" -Tail 20 -ErrorAction SilentlyContinue
+              Write-Host "--- log cloudflared ---"
+              Get-Content "cf_full.log" -Tail 20 -ErrorAction SilentlyContinue
+              break
+            }
+            Write-Host "Masih hidup... $(Get-Date) | websockify=$wsState cloudflared=$cfState"
           }
-          
