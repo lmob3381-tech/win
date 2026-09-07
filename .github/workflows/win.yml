@@ -10,8 +10,8 @@ on:
 
 jobs:
   windows-rdp:
-    runs-on: windows-2022
-    timeout-minutes: 350   # ~6 jam, batas maksimal GitHub-hosted runner
+    runs-on: windows-2025        # ← ganti dari windows-2022
+    timeout-minutes: 350
 
     steps:
       - name: Install Tailscale
@@ -70,13 +70,11 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          # Enable Remote Desktop
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 
           $password = ConvertTo-SecureString "${{ github.event.inputs.rdp_password }}" -AsPlainText -Force
 
-          # Cari user admin lokal secara otomatis (nama beda-beda tergantung image runner)
           Write-Host "Daftar local user yang ada:"
           Get-LocalUser | Select-Object Name, Enabled | Format-Table | Out-String | Write-Host
 
@@ -91,7 +89,6 @@ jobs:
           }
 
           if (-not $user) {
-            # Fallback: ambil user pertama yang tergabung di grup Administrators
             $adminGroup = Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue
             if ($adminGroup) {
               $user = ($adminGroup | Select-Object -First 1).Name -replace '^.*\\', ''
@@ -106,7 +103,6 @@ jobs:
           Set-LocalUser -Name $user -Password $password
           Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
 
-          # Pastikan NLA tidak menghalangi (opsional, biar auto-connect lebih mulus dari client mana pun)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1 -ErrorAction SilentlyContinue
 
           Write-Host "RDP enabled. User: $user"
@@ -152,4 +148,3 @@ jobs:
           } else {
             Write-Host "Tailscale tidak terinstall, skip logout."
           }
-          
