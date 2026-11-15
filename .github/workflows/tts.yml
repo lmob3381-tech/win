@@ -29,7 +29,7 @@ jobs:
     steps:
       - name: Install Neural Voice Engine
         run: |
-          pip3 install --quiet edge-tts gTTS --break-system-packages || pip3 install --quiet edge-tts gTTS
+          pip3 install --quiet edge-tts gTTS imageio-ffmpeg --break-system-packages || pip3 install --quiet edge-tts gTTS imageio-ffmpeg
 
       - name: Synthesize & Master Studio Audio (FFmpeg EQ + Compressor)
         env:
@@ -40,7 +40,7 @@ jobs:
           python3 - << 'EOF'
           import os
           import re
-          import subprocess
+          import subprocess, imageio_ffmpeg
           import sys
 
           VOICE_STOCK_MODELS = {
@@ -115,7 +115,7 @@ jobs:
                       af_filter = AUDIO_MASTERING_FILTERS.get(cand["preset"], AUDIO_MASTERING_FILTERS["cinema_deep"])
                       subprocess.run(
                           [
-                              "ffmpeg", "-y", "-i", raw_mp3,
+                              imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", raw_mp3,
                               "-af", af_filter,
                               "-ar", "44100", "-ac", "2", "-b:a", "192k",
                               output_path,
