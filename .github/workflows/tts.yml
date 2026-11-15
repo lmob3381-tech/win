@@ -1,16 +1,16 @@
-name: Serverless AI Voice Generator (Edge-TTS)
+name: Serverless AI Studio Voice Engine
 
 on:
   workflow_dispatch:
     inputs:
       text:
-        description: "Teks narasi atau kata-kata yang akan dikonversi menjadi suara"
+        description: "Teks narasi yang akan dikonversi menjadi suara"
         required: true
         type: string
       voice:
-        description: "Kode model suara neural Edge-TTS"
+        description: "ID preset model suara (mis. char_dokumenter, id_brian_narrator)"
         required: false
-        default: "id-ID-ArdiNeural"
+        default: "char_dokumenter"
         type: string
       filename:
         description: "Nama file output tanpa ekstensi .mp3"
@@ -27,31 +27,58 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Edge-TTS Neural Engine
+      - name: Install Neural Voice Engine
         run: |
-          python -m pip install --upgrade pip
-          pip install edge-tts
+          pip3 install --quiet edge-tts gTTS --break-system-packages || pip3 install --quiet edge-tts gTTS
 
-      - name: Render High-Quality Neural MP3
+      - name: Synthesize & Master Studio Audio (FFmpeg EQ + Compressor)
         env:
           TTS_TEXT: ${{ inputs.text }}
-          TTS_VOICE: ${{ inputs.voice }}
+          TTS_MODEL_KEY: ${{ inputs.voice }}
           TTS_FILENAME: ${{ inputs.filename }}
         run: |
-          python - << 'EOF'
-          import asyncio
+          python3 - << 'EOF'
           import os
           import re
+          import subprocess
           import sys
-          import edge_tts
+
+          VOICE_STOCK_MODELS = {
+              "char_dokumenter":   {"voice": "en-US-BrianMultilingualNeural",     "pitch": "-3Hz", "rate": "+0%",  "preset": "cinema_deep"},
+              "id_brian_narrator": {"voice": "en-US-BrianMultilingualNeural",     "pitch": "-2Hz", "rate": "+3%",  "preset": "cinema_deep"},
+              "id_florian_tech":   {"voice": "de-DE-FlorianMultilingualNeural",   "pitch": "-1Hz", "rate": "+5%",  "preset": "cinema_deep"},
+              "id_ardi_cinema":    {"voice": "id-ID-ArdiNeural",                  "pitch": "-4Hz", "rate": "-2%",  "preset": "cinema_deep"},
+              "char_mekanik_ahli": {"voice": "id-ID-ArdiNeural",                  "pitch": "-2Hz", "rate": "+4%",  "preset": "cinema_deep"},
+              "id_remy_docu":      {"voice": "fr-FR-RemyMultilingualNeural",      "pitch": "-1Hz", "rate": "+3%",  "preset": "studio_warm"},
+              "char_ulasan_tekno": {"voice": "en-US-AndrewMultilingualNeural",    "pitch": "-1Hz", "rate": "+8%",  "preset": "studio_warm"},
+              "id_andrew_studio":  {"voice": "en-US-AndrewMultilingualNeural",    "pitch": "+0Hz", "rate": "+4%",  "preset": "studio_warm"},
+              "id_ardi_pro":       {"voice": "id-ID-ArdiNeural",                  "pitch": "-1Hz", "rate": "+5%",  "preset": "studio_warm"},
+              "id_ardi_fast":      {"voice": "id-ID-ArdiNeural",                  "pitch": "+0Hz", "rate": "+14%", "preset": "studio_crisp"},
+              "id_ava_studio":     {"voice": "en-US-AvaMultilingualNeural",       "pitch": "+0Hz", "rate": "+2%",  "preset": "studio_crisp"},
+              "id_emma_story":     {"voice": "en-US-EmmaMultilingualNeural",      "pitch": "+1Hz", "rate": "+2%",  "preset": "studio_crisp"},
+              "id_seraphina_calm": {"voice": "de-DE-SeraphinaMultilingualNeural", "pitch": "+0Hz", "rate": "+0%",  "preset": "studio_crisp"},
+              "id_vivienne_soft":  {"voice": "fr-FR-VivienneMultilingualNeural",  "pitch": "+0Hz", "rate": "+0%",  "preset": "studio_crisp"},
+              "char_instruktur":   {"voice": "id-ID-GadisNeural",                 "pitch": "+0Hz", "rate": "+5%",  "preset": "studio_warm"},
+              "id_gadis_news":     {"voice": "id-ID-GadisNeural",                 "pitch": "-1Hz", "rate": "+6%",  "preset": "studio_warm"},
+              "id_gadis_natural":  {"voice": "id-ID-GadisNeural",                 "pitch": "+0Hz", "rate": "+4%",  "preset": "studio_crisp"},
+              "id_gadis_ceria":    {"voice": "id-ID-GadisNeural",                 "pitch": "+3Hz", "rate": "+10%", "preset": "studio_crisp"},
+              "eleven_adam":       {"voice": "en-US-ChristopherNeural",           "pitch": "-3Hz", "rate": "+2%",  "preset": "cinema_deep"},
+              "eleven_antoni":     {"voice": "en-US-EricNeural",                  "pitch": "-1Hz", "rate": "+4%",  "preset": "studio_warm"},
+              "eleven_josh":       {"voice": "en-US-GuyNeural",                   "pitch": "-2Hz", "rate": "+3%",  "preset": "studio_warm"},
+              "eleven_callum":     {"voice": "en-GB-RyanNeural",                  "pitch": "-2Hz", "rate": "+2%",  "preset": "cinema_deep"},
+              "eleven_rachel":     {"voice": "en-US-AriaNeural",                  "pitch": "+0Hz", "rate": "+2%",  "preset": "studio_crisp"},
+              "eleven_bella":      {"voice": "en-US-JennyNeural",                 "pitch": "+1Hz", "rate": "+0%",  "preset": "studio_crisp"},
+              "eleven_charlotte":  {"voice": "en-GB-SoniaNeural",                 "pitch": "+0Hz", "rate": "+2%",  "preset": "studio_crisp"},
+          }
+
+          AUDIO_MASTERING_FILTERS = {
+              "studio_warm":  "highpass=f=75,equalizer=f=180:width_type=o:width=1.2:g=2.5,equalizer=f=3500:width_type=o:width=1.5:g=2.0,acompressor=threshold=-18dB:ratio=3:attack=15:release=150:makeup=2dB,alimiter=limit=0.95",
+              "studio_crisp": "highpass=f=85,equalizer=f=220:width_type=o:width=1.2:g=1.5,equalizer=f=4500:width_type=o:width=1.5:g=3.0,acompressor=threshold=-16dB:ratio=2.8:attack=10:release=120:makeup=2dB,alimiter=limit=0.95",
+              "cinema_deep":  "highpass=f=60,equalizer=f=130:width_type=o:width=1.0:g=4.0,equalizer=f=3200:width_type=o:width=1.5:g=2.2,acompressor=threshold=-20dB:ratio=3.5:attack=12:release=180:makeup=3dB,alimiter=limit=0.95",
+          }
 
           text = os.environ.get("TTS_TEXT", "").strip()
-          voice = os.environ.get("TTS_VOICE", "id-ID-ArdiNeural").strip() or "id-ID-ArdiNeural"
+          model_key = os.environ.get("TTS_MODEL_KEY", "char_dokumenter").strip() or "char_dokumenter"
           raw_filename = os.environ.get("TTS_FILENAME", "output_audio").strip() or "output_audio"
 
           if raw_filename.lower().endswith(".mp3"):
@@ -60,22 +87,51 @@ jobs:
           safe_filename = re.sub(r'[\\/*?:"<>|]+', "_", raw_filename)
           safe_filename = re.sub(r"\s+", "_", safe_filename) or "output_audio"
           output_path = f"{safe_filename}.mp3"
+          raw_mp3 = "/tmp/raw_tts_unmastered.mp3"
 
           if not text:
               print("Error: Parameter 'text' kosong.", file=sys.stderr)
               sys.exit(1)
 
-          async def synthesize() -> None:
-              communicate = edge_tts.Communicate(text=text, voice=voice)
-              await communicate.save(output_path)
+          cfg = VOICE_STOCK_MODELS.get(model_key, VOICE_STOCK_MODELS["char_dokumenter"])
+          candidates = [cfg, VOICE_STOCK_MODELS["id_ardi_pro"], VOICE_STOCK_MODELS["id_gadis_natural"]]
+          success = False
 
-          asyncio.run(synthesize())
+          for cand in candidates:
+              try:
+                  subprocess.run(
+                      [
+                          "edge-tts",
+                          "--voice", cand["voice"],
+                          f"--pitch={cand['pitch']}",
+                          f"--rate={cand['rate']}",
+                          "--text", text,
+                          "--write-media", raw_mp3,
+                      ],
+                      check=True,
+                      timeout=45,
+                  )
+                  if os.path.isfile(raw_mp3) and os.path.getsize(raw_mp3) > 200:
+                      af_filter = AUDIO_MASTERING_FILTERS.get(cand["preset"], AUDIO_MASTERING_FILTERS["cinema_deep"])
+                      subprocess.run(
+                          [
+                              "ffmpeg", "-y", "-i", raw_mp3,
+                              "-af", af_filter,
+                              "-ar", "44100", "-ac", "2", "-b:a", "192k",
+                              output_path,
+                          ],
+                          check=True,
+                      )
+                      os.remove(raw_mp3)
+                      success = True
+                      print(f"Studio Mastered MP3 selesai: {output_path} | Model={model_key} ({cand['voice']}, {cand['pitch']}, {cand['rate']}, {cand['preset']})")
+                      break
+              except Exception as err:
+                  print(f"Percobaan {cand['voice']} gagal: {err}", file=sys.stderr)
 
-          if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-              print("Error: File MP3 gagal dibuat atau berukuran 0 byte.", file=sys.stderr)
+          if not success:
+              print("Error: Gagal merender suara neural.", file=sys.stderr)
               sys.exit(1)
-
-          print(f"Berhasil merender: {output_path} ({os.path.getsize(output_path)} bytes) dengan suara {voice}")
           EOF
 
       - name: Upload MP3 to GitHub Artifacts
