@@ -90,7 +90,6 @@ jobs:
           raw_mp3 = "/tmp/raw_tts_unmastered.mp3"
 
           if not text:
-              print("Error: Parameter 'text' kosong.", file=sys.stderr)
               sys.exit(1)
 
           cfg = VOICE_STOCK_MODELS.get(model_key, VOICE_STOCK_MODELS["char_dokumenter"])
@@ -124,13 +123,11 @@ jobs:
                       )
                       os.remove(raw_mp3)
                       success = True
-                      print(f"Studio Mastered MP3 selesai: {output_path} | Model={model_key} ({cand['voice']}, {cand['pitch']}, {cand['rate']}, {cand['preset']})")
                       break
-              except Exception as err:
-                  print(f"Percobaan {cand['voice']} gagal: {err}", file=sys.stderr)
+              except Exception:
+                  pass
 
           if not success:
-              print("Error: Gagal merender suara neural.", file=sys.stderr)
               sys.exit(1)
           EOF
 
